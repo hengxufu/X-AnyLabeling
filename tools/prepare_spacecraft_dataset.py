@@ -103,6 +103,14 @@ def build_index(root: Path, allowed_exts: set[str]) -> dict[str, Path]:
             continue
         if path.suffix.lower() not in allowed_exts:
             continue
+        if path.stem in index:
+            existing = index[path.stem]
+            raise ValueError(
+                "Duplicate file stem detected under "
+                f"{root}: '{path.stem}' maps to both "
+                f"'{existing.relative_to(root)}' and '{path.relative_to(root)}'. "
+                "Rename one of the files or flatten the dataset before running."
+            )
         index[path.stem] = path
     return index
 

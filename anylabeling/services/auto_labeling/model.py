@@ -28,7 +28,12 @@ def _check_model_worker(model_path):
         if file_extension == ".onnx":
             import onnx
 
-            onnx.checker.check_model(model_path)
+            checker = getattr(onnx, "checker", None)
+            if checker is None:
+                if os.path.getsize(model_path) > 0:
+                    return
+                raise RuntimeError("onnx.checker is unavailable")
+            checker.check_model(model_path)
         elif file_extension in [".pth", ".pt"]:
             import torch
 

@@ -8,12 +8,11 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvRoot = Join-Path $repoRoot ".venv-cu12"
 $pythonExe = Join-Path $venvRoot "Scripts\python.exe"
-$appExe = Join-Path $venvRoot "Scripts\xanylabeling.exe"
 $sitePackages = Join-Path $venvRoot "Lib\site-packages"
 $nvidiaRoot = Join-Path $sitePackages "nvidia"
 
-if (-not (Test-Path $appExe)) {
-    throw "GPU launcher target not found: $appExe"
+if (-not (Test-Path $pythonExe)) {
+    throw "GPU launcher target not found: $pythonExe"
 }
 
 $dllDirs = @(
@@ -35,14 +34,16 @@ if ($dllDirs.Count -eq 0) {
     $env:PATH = (($dllDirs + $env:PATH) -join ";")
 }
 
+$env:PYTHONPATH = (($repoRoot + ";" + $env:PYTHONPATH).TrimEnd(";"))
+
 Write-Host "X-AnyLabeling GPU launcher"
 Write-Host "Repo: $repoRoot"
 Write-Host "Python: $pythonExe"
-Write-Host "App: $appExe"
+Write-Host "App: python -m anylabeling.app"
 
 if ($dllDirs.Count -gt 0) {
     Write-Host "CUDA DLL dirs:"
     $dllDirs | ForEach-Object { Write-Host "  - $_" }
 }
 
-& $appExe @Args
+& $pythonExe -m anylabeling.app @Args
