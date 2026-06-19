@@ -39,11 +39,11 @@ $env:PYTHONPATH = (($repoRoot + ";" + $env:PYTHONPATH).TrimEnd(";"))
 Write-Host "X-AnyLabeling GPU launcher"
 Write-Host "Repo: $repoRoot"
 Write-Host "Python: $pythonExe"
-Write-Host "App: python -m anylabeling.app"
+Write-Host "App: python -m anylabeling.app --work-dir $repoRoot"
 
 if ($dllDirs.Count -gt 0) {
     Write-Host "CUDA DLL dirs:"
     $dllDirs | ForEach-Object { Write-Host "  - $_" }
 }
 
-& $pythonExe -m anylabeling.app @Args
+& $pythonExe -m anylabeling.app --work-dir $repoRoot @Args
