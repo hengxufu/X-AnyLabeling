@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import os.path as osp
 from PIL import Image
 
@@ -23,6 +24,7 @@ from anylabeling.services.auto_labeling import (
     _BATCH_PROCESSING_VIDEO_MODELS,
     _SKIP_DET_MODELS,
 )
+from anylabeling.services.auto_labeling.types import AutoLabelingResult
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.utils._io import io_open
@@ -205,22 +207,81 @@ def cancel_operation(self):
     self.cancel_processing = True
 
 
+def get_batch_failure_report(self, image_file):
+    report_path = getattr(self, "batch_failure_report", None)
+    if report_path:
+        return report_path
+
+    report_root = self.output_dir or osp.dirname(image_file)
+    review_dir = osp.join(report_root, "review")
+    os.makedirs(review_dir, exist_ok=True)
+    report_path = osp.join(review_dir, "failed_batch.jsonl")
+    self.batch_failure_report = report_path
+    return report_path
+
+
+def reset_batch_failure_report(self):
+    if not self.image_list:
+        return
+    report_path = get_batch_failure_report(self, self.image_list[0])
+    with io_open(report_path, "w"):
+        pass
+    self.batch_failed_count = 0
+
+
+def record_batch_failure(self, image_file, reason, result_type=None):
+    report_path = get_batch_failure_report(self, image_file)
+    record = {
+        "image_file": image_file,
+        "reason": reason,
+        "result_type": result_type,
+    }
+    with open(report_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    self.batch_failed_count = getattr(self, "batch_failed_count", 0) + 1
+
+
 def save_auto_labeling_result(self, image_file, auto_labeling_result):
+    result_type = type(auto_labeling_result).__name__
+    if not isinstance(auto_labeling_result, AutoLabelingResult):
+        reason = "prediction_did_not_return_AutoLabelingResult"
+        record_batch_failure(self, image_file, reason, result_type)
+        logger.error(
+            f"Skipping auto-label save for '{image_file}': {reason} "
+            f"(got {result_type})"
+        )
+        return False
+
+    prediction_error = getattr(auto_labeling_result, "error", None)
+    if prediction_error:
+        record_batch_failure(
+            self, image_file, str(prediction_error), result_type
+        )
+        logger.error(
+            f"Skipping failed auto-label prediction for '{image_file}': "
+            f"{prediction_error}"
+        )
+        return False
+
+    if not auto_labeling_result.shapes and not auto_labeling_result.description:
+        reason = "empty_prediction_result"
+        record_batch_failure(self, image_file, reason, result_type)
+        logger.warning(
+            f"Skipping empty auto-label result for '{image_file}'. "
+            f"Recorded in {get_batch_failure_report(self, image_file)}"
+        )
+        return False
+
     try:
         label_file = osp.splitext(image_file)[0] + ".json"
         if self.output_dir:
             label_file = osp.join(self.output_dir, osp.basename(label_file))
 
-        if auto_labeling_result is None:
-            new_shapes = []
-            new_description = ""
-            replace = True
-        else:
-            new_shapes = [
-                shape.to_dict() for shape in auto_labeling_result.shapes
-            ]
-            new_description = auto_labeling_result.description
-            replace = auto_labeling_result.replace
+        new_shapes = [
+            shape.to_dict() for shape in auto_labeling_result.shapes
+        ]
+        new_description = auto_labeling_result.description
+        replace = auto_labeling_result.replace
 
         if osp.exists(label_file):
             with io_open(label_file, "r") as f:
@@ -259,11 +320,14 @@ def save_auto_labeling_result(self, image_file, auto_labeling_result):
 
         with io_open(label_file, "w") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
 
     except Exception as e:
+        record_batch_failure(self, image_file, str(e), result_type)
         logger.error(
             f"Failed to save auto labeling result for image file '{image_file}': {str(e)}"
         )
+        return False
 
 
 class BatchProcessingThread(QThread):
@@ -629,6 +693,7 @@ def run_all_images(self):
         return
 
     logger.info("Start running all images...")
+    reset_batch_failure_report(self)
 
     self.current_index = self.fn_to_index[str(self.filename)]
     self.image_index = self.current_index

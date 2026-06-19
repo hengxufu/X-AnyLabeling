@@ -116,7 +116,11 @@ def build_index(root: Path, allowed_exts: set[str]) -> dict[str, Path]:
 
 
 def load_mask_binary(mask_path: Path, threshold: int) -> np.ndarray:
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    # cv2.imread() cannot reliably open non-ASCII paths on Windows. Read the
+    # encoded bytes with NumPy (which supports Unicode paths), then let OpenCV
+    # decode the image from memory.
+    encoded = np.fromfile(mask_path, dtype=np.uint8)
+    mask = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
     if mask is None:
         raise ValueError(f"Failed to read mask: {mask_path}")
     return np.where(mask > threshold, 255, 0).astype(np.uint8)

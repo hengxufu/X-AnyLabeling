@@ -163,6 +163,13 @@ class GroundingSAM2(Model):
         """Set cropping mode for small object detection"""
         self.cropping_mode = enabled
 
+    @staticmethod
+    def failure_result(message):
+        """Return a type-stable result while preserving the failure reason."""
+        result = AutoLabelingResult([], replace=False)
+        result.error = str(message)
+        return result
+
     def preprocess(self, image, text_prompt):
         blob = GroundingDINOBase.preprocess_image(image, self.target_size)
         (
@@ -313,14 +320,14 @@ class GroundingSAM2(Model):
         Predict shapes from image
         """
         if image is None:
-            return []
+            return self.failure_result("Input image is None")
 
         try:
             cv_image = qt_img_to_rgb_cv_img(image, image_path)
         except Exception as e:  # noqa
             logger.warning("Could not inference model")
             logger.warning(e)
-            return []
+            return self.failure_result(f"Could not convert input image: {e}")
 
         try:
             original_height, original_width = cv_image.shape[:2]
@@ -519,7 +526,7 @@ class GroundingSAM2(Model):
             logger.warning("Could not inference model")
             logger.warning(e)
             traceback.print_exc()
-            return AutoLabelingResult([], replace=False)
+            return self.failure_result(f"Model inference failed: {e}")
 
     def unload(self):
         del self.net
