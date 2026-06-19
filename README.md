@@ -167,6 +167,108 @@ Also, we highly recommend trying out [X-AnyLabeling-Server](https://github.com/C
 8. [Video Classifier](./docs/en/video_classifier.md)
 9. [Document Parsing and Intelligent Text Recognition](./docs/en/paddle_ocr.md)
 
+## Windows GPU Workflow
+
+The repository can be used on Windows with a local GPU workflow for promptable spacecraft segmentation and dataset preparation. The steps below reflect a verified setup that uses the local source tree as the working directory so downloaded models are stored inside the repository instead of the user home directory.
+
+### Launch with local work directory
+
+Use the PowerShell launcher from the repository root:
+
+```powershell
+cd D:\进阶项目\LABEL\X-AnyLabeling
+powershell -ExecutionPolicy Bypass -File .\tools\launch_xanylabeling_gpu.ps1
+```
+
+Run environment checks with:
+
+```powershell
+cd D:\进阶项目\LABEL\X-AnyLabeling
+powershell -ExecutionPolicy Bypass -File .\tools\launch_xanylabeling_gpu.ps1 checks
+```
+
+This launcher starts `python -m anylabeling.app --work-dir <repo-root>` and injects NVIDIA runtime DLL paths from the active virtual environment.
+
+### Model cache location
+
+With the launcher above, model files are stored under:
+
+```text
+<repo-root>\xanylabeling_data\models\
+```
+
+For `GroundingSAM2`, the expected directory is:
+
+```text
+<repo-root>\xanylabeling_data\models\groundingdino_swint_sam2_large-r20240806\
+```
+
+Expected files:
+
+- `groundingdino_swint_ogc_quant.onnx`
+- `sam2.1_hiera_large.encoder.onnx`
+- `sam2.1_hiera_large.decoder.onnx`
+
+### Recommended labeling flow
+
+1. Open an image folder with `Ctrl+U`.
+2. Open the AI panel with `Ctrl+A`.
+3. Select `GroundingSAM2`.
+4. Start with a prompt such as `spacecraft, satellite, solar panel, antenna`.
+5. Run a small sample first.
+6. For difficult images, switch to `SAM2 Large` and refine with box and point prompts.
+7. Keep the label name consistent, for example `spacecraft`.
+
+Recommended prompt order for open-vocabulary segmentation:
+
+- `spacecraft`
+- `satellite`
+- `spacecraft, satellite, solar panel, antenna`
+
+### Export masks
+
+After reviewing labels, export grayscale masks from the GUI:
+
+`Export -> Export Mask Annotations`
+
+Use the grayscale mapping file:
+
+- [spacecraft_mask_grayscale_map.json](./tools/spacecraft_mask_grayscale_map.json)
+
+This mapping exports `spacecraft` as foreground `255` and background as `0`.
+
+### Prepare img2img-turbo style datasets
+
+The repository includes a helper script for building `train_A/train_B/test_A/test_B` datasets from source images and exported masks:
+
+- [prepare_spacecraft_dataset.py](./tools/prepare_spacecraft_dataset.py)
+
+Example:
+
+```powershell
+cd D:\进阶项目\LABEL\X-AnyLabeling
+.\.venv-cu12\Scripts\python.exe .\tools\prepare_spacecraft_dataset.py `
+  --images-a D:\进阶项目\src `
+  --masks-a D:\进阶项目\spacecraft_render2real_staging\masks_A_raw `
+  --images-b D:\进阶项目\100CANON `
+  --masks-b D:\进阶项目\spacecraft_render2real_staging\masks_B_raw `
+  --output-dir D:\进阶项目\spacecraft_render2real `
+  --size 512 `
+  --background black
+```
+
+The script:
+
+- keeps the original images untouched
+- resizes outputs to `512` or `1024`
+- keeps aspect ratio with padding instead of cropping
+- writes review CSV files for suspicious masks
+- generates fixed prompt files for domain A and domain B
+
+### Duplicate stem safety check
+
+`prepare_spacecraft_dataset.py` refuses to continue if multiple files under the same input root share the same stem. This avoids silent overwrites such as `a\0001.png` and `b\0001.png` collapsing into one index entry and producing mismatched image-mask pairs.
+
 ## Examples
 
 - [Classification](./examples/classification/)
