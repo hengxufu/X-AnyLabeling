@@ -23,8 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from anylabeling.views.labeling.label_converter import LabelConverter  # noqa: E402
-
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -84,6 +82,84 @@ def write_lines(path: Path | None, lines: list[str]) -> None:
     )
 
 
+def clamp_point(x: float, y: float, width: int, height: int) -> tuple[int, int]:
+    x = min(max(int(round(x)), 0), width - 1)
+    y = min(max(int(round(y)), 0), height - 1)
+    return x, y
+
+
+def shape_to_contour(
+    shape: dict, width: int, height: int, foreground_label: str
+) -> np.ndarray | None:
+    if str(shape.get("label") or "") != foreground_label:
+        return None
+
+    shape_type = str(shape.get("shape_type") or "")
+    points = shape.get("points") or []
+
+    if shape_type == "polygon":
+        if len(points) < 3:
+            return None
+        contour = [clamp_point(x, y, width, height) for x, y in points]
+        return np.array(contour, dtype=np.int32)
+
+    if shape_type == "rectangle":
+        if len(points) == 2:
+            (x0, y0), (x1, y1) = points
+            left, right = sorted((x0, x1))
+            top, bottom = sorted((y0, y1))
+            contour = [
+                clamp_point(left, top, width, height),
+                clamp_point(right, top, width, height),
+                clamp_point(right, bottom, width, height),
+                clamp_point(left, bottom, width, height),
+            ]
+            return np.array(contour, dtype=np.int32)
+        if len(points) >= 4:
+            contour = [
+                clamp_point(x, y, width, height) for x, y in points[:4]
+            ]
+            return np.array(contour, dtype=np.int32)
+    return None
+
+
+def write_mask_from_shapes(
+    output_file: Path, data: dict, foreground_label: str
+) -> tuple[bool, Counter[str], Counter[str]]:
+    width = int(data["imageWidth"])
+    height = int(data["imageHeight"])
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    contours: list[np.ndarray] = []
+    ignored_shape_types: Counter[str] = Counter()
+    ignored_labels: Counter[str] = Counter()
+
+    for shape in data.get("shapes") or []:
+        shape_type = str(shape.get("shape_type") or "")
+        label = str(shape.get("label") or "")
+
+        if label != foreground_label:
+            ignored_labels[label or "<missing>"] += 1
+            continue
+
+        contour = shape_to_contour(shape, width, height, foreground_label)
+        if contour is None:
+            ignored_shape_types[shape_type or "<missing>"] += 1
+            continue
+        contours.append(contour)
+
+    if contours:
+        contours.sort(key=cv2.contourArea, reverse=True)
+        for contour in contours:
+            cv2.fillPoly(mask, [contour], 255)
+
+    ok, png = cv2.imencode(".png", mask)
+    if not ok:
+        raise RuntimeError("OpenCV failed to encode PNG mask")
+    output_file.write_bytes(png.tobytes())
+    return bool(contours), ignored_shape_types, ignored_labels
+
+
 def main() -> int:
     args = parse_args()
     labels_root = args.labels.resolve()
@@ -96,7 +172,6 @@ def main() -> int:
 
     output_root.mkdir(parents=True, exist_ok=True)
     label_files = sorted(labels_root.rglob("*.json"))
-    converter = LabelConverter()
     mapping = {
         "type": "grayscale",
         "colors": {args.foreground_label: 255},
@@ -133,21 +208,16 @@ def main() -> int:
             if not shapes:
                 empty_annotations.append(f"{stem}\t{json_file}")
 
-            usable_polygon_count = 0
-            for shape in shapes:
-                shape_type = str(shape.get("shape_type") or "")
-                label = str(shape.get("label") or "")
-                points = shape.get("points") or []
-                if shape_type != "polygon":
-                    ignored_shape_types[shape_type or "<missing>"] += 1
-                elif label != args.foreground_label:
-                    ignored_labels[label or "<missing>"] += 1
-                elif len(points) >= 3:
-                    usable_polygon_count += 1
-
             output_file = output_root / f"{stem}.png"
-            if usable_polygon_count:
-                converter.custom_to_mask(json_file, output_file, mapping)
+            has_foreground, shape_type_counts, label_counts = write_mask_from_shapes(
+                output_file=output_file,
+                data=data,
+                foreground_label=args.foreground_label,
+            )
+            ignored_shape_types.update(shape_type_counts)
+            ignored_labels.update(label_counts)
+
+            if has_foreground:
                 foreground_masks += 1
                 mask = cv2.imdecode(
                     np.fromfile(output_file, dtype=np.uint8),
@@ -165,19 +235,6 @@ def main() -> int:
                     raise RuntimeError(
                         f"unexpected grayscale values: {sorted(values)}"
                     )
-            else:
-                cache_key = (width, height)
-                encoded = blank_png_cache.get(cache_key)
-                if encoded is None:
-                    blank = np.zeros((height, width), dtype=np.uint8)
-                    ok, png = cv2.imencode(".png", blank)
-                    if not ok:
-                        raise RuntimeError("OpenCV failed to encode blank PNG")
-                    encoded = png.tobytes()
-                    blank_png_cache[cache_key] = encoded
-                output_file.write_bytes(encoded)
-                if output_file.stat().st_size != len(encoded):
-                    raise RuntimeError("written blank PNG has an unexpected size")
             exported += 1
         except Exception as exc:  # Continue so one bad JSON does not stop the batch.
             failures.append(f"{json_file}\t{type(exc).__name__}: {exc}")
